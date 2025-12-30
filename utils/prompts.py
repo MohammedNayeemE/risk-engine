@@ -103,4 +103,8 @@ DO NOT include:
 - Risk scores
 - Probability language
 """,
+    "check_combination_prompt": f"""
+    check whether in this list of medicine combinations combinations exists a subset of this list fixed
+    if exists return them as a list
+    """,
 }

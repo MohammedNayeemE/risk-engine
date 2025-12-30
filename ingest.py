@@ -9,8 +9,6 @@ from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 
-# TODO: write index db from the chunks
-
 load_dotenv()
 CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 if not CONNECTION_STRING:

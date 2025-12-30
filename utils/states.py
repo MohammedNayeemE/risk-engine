@@ -5,9 +5,6 @@ from typing import Annotated, Any, List, Literal, Optional, Set, TypedDict
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, Field
 
-# TODO: replace this with redis cache
-IMAGE_HASH_SET: Set[str] = set()
-
 
 class MedicineItem(BaseModel):
     name: Optional[str] = Field(

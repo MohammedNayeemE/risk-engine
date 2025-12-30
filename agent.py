@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from agents.graph import sql_graph
 from utils.nodes import (
     ban_check,
     check_image_quality,
@@ -22,7 +23,6 @@ load_dotenv()
 # TODO: improve input and output_schema
 builder = StateGraph(OverallState, input_schema=InputState, output_schema=OutputState)
 
-
 builder.add_node("validate_input", validate_input)
 builder.add_node("check_image_quality", check_image_quality)
 builder.add_node("extract_image", extract_image)
@@ -30,8 +30,19 @@ builder.add_node("human_approval", human_approval)
 builder.add_node("ban_check", ban_check)
 builder.add_node("nlem_check", nlem_check)
 builder.add_node("generate_explanation", generate_explanation)
+builder.add_node("sql_graph", sql_graph)
 
 builder.add_edge(START, "validate_input")
+# builder.add_conditional_edges(
+#     "ban_check",
+#     route,
+#     {
+#         "sql_graph": "sql_graph",
+#         "nlem_check": "nlem_check",
+#         "generate_explanation": "generate_explanation",
+#     },
+# )
+builder.add_edge("sql_graph", "ban_check")
 
 
 graph = builder.compile()

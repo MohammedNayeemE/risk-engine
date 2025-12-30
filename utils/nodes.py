@@ -1,9 +1,11 @@
 import base64
+import json
 from io import BytesIO
+from itertools import combinations
 from operator import add
 from os import stat
 from re import L
-from typing import Annotated, List, Literal, TypedDict
+from typing import Annotated, List, Literal, Tuple, TypedDict
 
 import cv2
 import numpy as np
@@ -19,15 +21,18 @@ from pydantic.type_adapter import P
 from sqlalchemy import update
 
 from utils.prompts import SYSTEM_PROMPTS
-from utils.states import (
-    IMAGE_HASH_SET,
-    Decision,
-    MedicineList,
-    OutputState,
-    OverallState,
-    UserProfile,
+from utils.states import Decision, MedicineList, OutputState, OverallState, UserProfile
+from utils.tools import (
+    get_combinations_cache,
+    get_image_hash,
+    get_single_names_cache,
+    get_vector_db,
+    normalise_drug_name,
+    normalise_drug_names,
+    set_image_hash,
+    write_combinations_cache,
+    write_single_names_cache,
 )
-from utils.tools import get_vector_db, normalise_drug_name, normalise_drug_names
 
 load_dotenv()
 
@@ -39,8 +44,6 @@ def validate_input(state: OverallState) -> Command[Literal[END, "check_image_qua
     user = state["user"]
     if not user["name"] or not user["age"] or not user["gender"]:
         return Command(goto=END, update={"isValid": False})
-    if state["image_hash"] in IMAGE_HASH_SET:
-        return Command(goto=END, update={"isValid": False})
     if not state["image_base64"] or not state["image_mime"]:
         return Command(goto=END, update={"isValid": False})
 
@@ -49,6 +52,10 @@ def validate_input(state: OverallState) -> Command[Literal[END, "check_image_qua
 
 def extract_image(state: OverallState) -> Command[Literal["human_approval"]]:
     image_url = f"data:{state['image_mime']};base64,{state['image_base64']}"
+
+    res = get_image_hash(state["image_hash"], model=MedicineList)
+    if res:
+        return Command(goto="human_approval", update={"medicinelist": res})
 
     message = HumanMessage(
         content=[
@@ -61,9 +68,9 @@ def extract_image(state: OverallState) -> Command[Literal["human_approval"]]:
     )
 
     response = gemini_model.with_structured_output(MedicineList).invoke([message])
-    extracted = response.medicinelist
+    set_image_hash(state["image_hash"], response)
 
-    return Command(goto="human_approval", update={"medicinelist": extracted})
+    return Command(goto="human_approval", update={"medicinelist": response})
 
 
 def check_image_quality(state: OverallState) -> Command[Literal["extract_image", END]]:
@@ -166,71 +173,155 @@ def human_approval(
 
 
 # TODO: use multilayer checks
-# include the check with 1. exact name -> 2. combination -> 3.dosage
+# 1. check dosage (?)
+# 2. move the prompt from this function to prompt file
 def ban_check(
     state: OverallState,
-) -> Command[Literal["nlem_check", "generate_explanation"]]:
+) -> Command[Literal["sql_graph", "nlem_check", "generate_explanation"]]:
     medicines = state.get("medicinelist", [])
     if not medicines:
         return Command(
-            goto="generate_explanation",
-            update={"decison": Decision.FAIL, "ban_hits": []},
+            goto="nlem_check", update={"decision": Decision.PASS, "ban_hits": []}
         )
 
-    normalised_medicines = [normalise_drug_names(m) for m in medicines]
+    normalised_medicines = [normalise_drug_names(m) for m in medicines.medicinelist]
+    single_names = get_single_names_cache(key="banneddrugs")
+    plus_combinations = get_combinations_cache(key="plus_combinations")
+    fixed_combinations = get_combinations_cache(key="fixed_dose")
+
+    lst = [single_names, plus_combinations, fixed_combinations]
+
+    for ele in lst:
+        if not ele:
+            return Command(goto="sql_graph")
 
     ban_hits = []
-    vectorstore = get_vector_db(collection_name="drugs")
 
     for med in normalised_medicines:
-
-        docs = vectorstore.similarity_search(
-            query=med, k=5, filter={"source": "banneddrugs.pdf"}
-        )
-
-        for doc in docs:
-            candidate = normalise_drug_name(doc.page_content)
-            if candidate == med:
-                ban_hits.append(doc.metadata)
+        if med in single_names:
+            ban_hits.append(med)
 
     if ban_hits:
         return Command(
             goto="generate_explanation",
-            update={"decison": Decision.FAIL, "ban_hits": ban_hits},
+            update={"decision": Decision.FAIL, "ban_hits": ban_hits},
         )
 
-    return Command(goto="nlem_check", update={"decison": Decision.PASS, "ban_hits": []})
+    results = []
+    for i in range(1, len(normalised_medicines) + 1):
+        results.extend(combinations(normalised_medicines, i))
+
+    for comb in results:
+        if comb in plus_combinations:
+            ban_hits.append(comb)
+
+    if ban_hits:
+        return Command(
+            goto="generate_explanation",
+            update={"decision": Decision.FAIL, "ban_hits": ban_hits},
+        )
+
+    llm_prompt = f"""
+    You are a medical rule-matching assistant.
+    Input:
+    - medicines: {json.dumps(normalised_medicines)}
+    - banned_rules: {fixed_combinations}
+    Task:
+    - For each banned rule, determine whether it applies to the given medicines.
+    - A rule applies if the medicines satisfy the medical or pharmacological meaning of the rule.
+    - Use standard medical knowledge (e.g., drug classes, interactions, synonyms).
+    Output Rules:
+    - Return ONLY a JSON list of banned rules that apply.
+    - If none apply, return [].
+    - Do NOT explain your reasoning.
+    - Do NOT invent medicines not present in the input list.
+    - Be conservative: if unsure, do NOT include the rule.
+    """
+
+    response = groq_model.invoke(llm_prompt)
+
+    if response.content:
+        ban_hits.append(response.content)
+
+    if ban_hits:
+        return Command(
+            goto="generate_explanation",
+            update={"decision": Decision.FAIL, "ban_hits": ban_hits},
+        )
+
+    return Command(
+        goto="nlem_check", update={"decision": Decision.PASS, "ban_hits": []}
+    )
 
 
-# TODO: prolly use llm here to find subsets
+# TODO: move the prompt from this function to prompt file
 def nlem_check(state: OverallState) -> Command[Literal["generate_explanation"]]:
     medicines = state.get("medicinelist", [])
     if not medicines:
         return Command(
             goto="generate_explanation",
-            update={"decison": Decision.WARN, "nlem_hits": [], "nlem_misses": []},
+            update={"decision": Decision.WARN, "nlem_hits": [], "nlem_misses": []},
         )
 
     vectorstore = get_vector_db(collection_name="drugs")
 
     nlem_hits, nlem_misses = [], []
-
     normalised_medicines = [normalise_drug_names(m) for m in medicines]
+
+    candidates = {}
 
     for med in normalised_medicines:
         docs = vectorstore.similarity_search(
-            query=med, k=5, filter={"source": "data/nlem2022.pdf"}
+            query=med,
+            k=5,
+            filter={"source": "data/nlem2022.pdf"},
         )
-        matched = False
-        for doc in docs:
-            med_name = normalise_drug_name(doc.page_content)
 
-            if med == med_name:
-                matched = True
-                nlem_hits.append(doc.metadata)
+        candidate_names = [normalise_drug_name(doc.page_content) for doc in docs]
+        candidates[med] = candidate_names
 
-        if not matched:
-            nlem_misses.append(med)
+    llm_prompt = f"""
+You are an expert medical terminology normalization assistant specializing in drug name matching.
+
+Input:
+- A dictionary where each key is a raw drug mention (candidate) extracted from text.
+- The value for each key is a list of possible standardized medicine names (e.g., generic names, common synonyms, or known variants) that it might refer to.
+
+Your task:
+For each candidate key, determine which (if any) of the provided possible standardized names in its list actually refer to the **same medicine** as the candidate mention.
+
+Use standard pharmacological knowledge, including:
+- Generic vs brand name equivalence
+- Different salt forms of the same active moiety (e.g., "atorvastatin calcium" ≡ "atorvastatin")
+- Common abbreviations and synonyms
+- Strength and dosage form differences (ignore these unless they change the active ingredient)
+- Regional naming variations (e.g., paracetamol ≡ acetaminophen)
+
+Important rules:
+- Only consider a match if the active ingredient(s) are pharmacologically identical.
+- Do NOT assume a candidate is a combination drug unless explicitly indicated (e.g., avoid matching "lisinopril" to "lisinopril/HCTZ").
+- Do NOT match if only the drug class is the same (e.g., "statin" is not a match for "atorvastatin").
+- Ignore differences in strength, dosage form, or manufacturer.
+- Be strict and conservative: if there is any ambiguity or uncertainty, do NOT include it.
+
+Output format:
+Return ONLY a valid JSON list containing the candidate keys (the raw mentions) that have at least one correct match in their list.
+
+Examples:
+- If "Lipitor" has ["atorvastatin", "rosuvastatin"] → include "Lipitor" (matches atorvastatin)
+- If "tylenol" has ["paracetamol", "ibuprofen"] → include "tylenol" (matches paracetamol)
+- If "blood pressure pill" has ["lisinopril", "metoprolol"] → do NOT include (too vague)
+- If none match → return []
+
+Final output must be parseable JSON only. No explanations, no markdown, no extra text.
+
+Candidates:
+{json.dumps(candidates)}
+"""
+    response = groq_model.invoke(llm_prompt)
+
+    if response.content:
+        nlem_hits.append(response.content)
 
     decision = Decision.PASS if not nlem_misses else Decision.WARN
 
@@ -244,6 +335,7 @@ def nlem_check(state: OverallState) -> Command[Literal["generate_explanation"]]:
     )
 
 
+# TODO: improve the stucture and prompt of this node to give rightful decision
 def generate_explanation(state: OverallState) -> Command[Literal[END]]:
     context = {
         "decision": state.get("decision", []),

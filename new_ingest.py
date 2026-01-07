@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List
@@ -12,11 +13,11 @@ load_dotenv()
 def save_to_postgres(kv: dict):
 
     conninfo = (
-        "host=localhost "
-        "port=5432 "
-        "user=postgres "
-        "password=@genworx.ai "
-        "dbname=rag_db"
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
     )
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:

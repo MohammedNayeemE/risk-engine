@@ -2,9 +2,12 @@
 
 Modern medicine safety risk assessment engine built with LangChain + LangGraph.
 
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for design principles and layered structure.
+Or visit this deepwiki documentation 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/MohammedNayeemE/risk-engine)
 
 ## Getting Started
 

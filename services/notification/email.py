@@ -13,16 +13,20 @@ logger = logging.getLogger(__name__)
 
 
 # Configure email connection
-email_config = ConnectionConfig(
-    mail_from=settings.SENDER_EMAIL,
-    mail_from_name=settings.SENDER_NAME,
-    mail_starttls=True,
-    mail_ssl_tls=False,
-    smtp_host=settings.SMTP_HOST,
-    smtp_port=settings.SMTP_PORT,
-    smtp_user=settings.SMTP_USER,
-    smtp_password=settings.SMTP_PASSWORD,
-) if settings.EMAIL_ENABLED and settings.SMTP_USER else None
+email_config = (
+    ConnectionConfig(
+        MAIL_USERNAME=settings.SENDER_NAME,
+        MAIL_PASSWORD=settings.SMTP_PASSWORD,
+        MAIL_FROM=settings.SENDER_EMAIL,
+        MAIL_PORT=settings.SMTP_PORT,
+        MAIL_SERVER=settings.SMTP_HOST,
+        MAIL_STARTTLS=True,
+        MAIL_SSL_TLS=False,
+        USE_CREDENTIALS=True,
+    )
+    if settings.EMAIL_ENABLED and settings.SMTP_USER
+    else None
+)
 
 
 async def send_warn_email(
@@ -35,7 +39,7 @@ async def send_warn_email(
 ) -> bool:
     """
     Send email notification when risk assessment decision is WARN.
-    
+
     Args:
         patient_name: Name of the patient
         patient_age: Age of the patient
@@ -43,23 +47,23 @@ async def send_warn_email(
         medicines: List of medicines in the prescription
         issues: List of safety issues found (should be of severity 'warning')
         recipient_emails: List of recipient email addresses (uses WARN_RECIPIENTS from config if not provided)
-    
+
     Returns:
         bool: True if email sent successfully, False otherwise
     """
-    
+
     # Check if email is enabled
     if not settings.EMAIL_ENABLED or not email_config:
         logger.warning("Email service is not enabled or not configured")
         return False
-    
+
     # Use provided recipients or fall back to configured recipients
     recipients = recipient_emails or settings.WARN_RECIPIENTS
-    
+
     if not recipients:
         logger.warning("No recipient emails configured for WARN decision notifications")
         return False
-    
+
     try:
         # Build email HTML content
         html_content = _build_warn_email_html(
@@ -69,7 +73,7 @@ async def send_warn_email(
             medicines=medicines,
             issues=issues,
         )
-        
+
         # Create message
         message = MessageSchema(
             subject=f"⚠️ Medicine Safety Warning - {patient_name}",
@@ -77,14 +81,16 @@ async def send_warn_email(
             html=html_content,
             subtype="html",
         )
-        
+
         # Send email
         fm = FastMail(email_config)
         await fm.send_message(message)
-        
-        logger.info(f"WARN notification email sent to {recipients} for patient {patient_name}")
+
+        logger.info(
+            f"WARN notification email sent to {recipients} for patient {patient_name}"
+        )
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to send WARN notification email: {str(e)}")
         return False
@@ -100,19 +106,19 @@ def _build_warn_email_html(
     """
     Build HTML content for the WARN decision email.
     """
-    
+
     # Build medicines list HTML
     medicines_html = ""
     if medicines:
         medicines_html = "<ul>"
         for med in medicines:
             if isinstance(med, dict):
-                name = med.get('name', 'Unknown')
-                form = med.get('form', '')
-                strength = med.get('strength', '')
-                dose = med.get('dose', '')
-                dosage = med.get('dosage', '')
-                
+                name = med.get("name", "Unknown")
+                form = med.get("form", "")
+                strength = med.get("strength", "")
+                dose = med.get("dose", "")
+                dosage = med.get("dosage", "")
+
                 med_str = f"{name}"
                 if form:
                     med_str += f" ({form})"
@@ -124,17 +130,17 @@ def _build_warn_email_html(
             else:
                 medicines_html += f"<li>{str(med)}</li>"
         medicines_html += "</ul>"
-    
+
     # Build issues list HTML
     issues_html = ""
     if issues:
         issues_html = "<ul>"
         for issue in issues:
             if isinstance(issue, dict):
-                issue_type = issue.get('issue_type', 'Unknown')
-                description = issue.get('description', '')
-                recommendation = issue.get('recommendation', '')
-                
+                issue_type = issue.get("issue_type", "Unknown")
+                description = issue.get("description", "")
+                recommendation = issue.get("recommendation", "")
+
                 issue_str = f"<strong>{issue_type}</strong>: {description}"
                 if recommendation:
                     issue_str += f" <em>Recommendation: {recommendation}</em>"
@@ -142,7 +148,7 @@ def _build_warn_email_html(
             else:
                 issues_html += f"<li>{str(issue)}</li>"
         issues_html += "</ul>"
-    
+
     html = f"""
     <html>
     <head>
@@ -220,5 +226,5 @@ def _build_warn_email_html(
     </body>
     </html>
     """
-    
+
     return html

@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SENDER_EMAIL: str = "noreply@riskengine.com"
     SENDER_NAME: str = "Risk Engine"
-    WARN_RECIPIENTS: list[str] = []
+    WARN_RECIPIENTS: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,6 +1,8 @@
-from typing import Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from engine.states.risk_states import MedicineItem
 
 
 class UserProfileRequest(BaseModel):
@@ -21,16 +23,6 @@ class RiskAssessmentRequest(BaseModel):
     user_profile: UserProfileRequest
     image_base64: str = Field(..., description="Base64 encoded image of prescription")
     image_mime: str = Field(default="image/jpeg", description="MIME type of the image")
-
-
-class MedicineItem(BaseModel):
-    """Medicine item returned by extraction/graph."""
-
-    name: Optional[str] = None
-    form: Optional[str] = None
-    strength: Optional[str] = None
-    dose: Optional[str] = None
-    dosage: Optional[str] = None
 
 
 class RiskAssessmentResponse(BaseModel):

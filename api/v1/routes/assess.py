@@ -5,18 +5,18 @@ import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 
 from api.v1.schemas import (
     ApprovalRequest,
     HumanApprovalResponse,
-    MedicineItem,
     RiskAssessmentRequest,
     RiskAssessmentResponse,
     UserProfileRequest,
 )
 from engine.orchestrator import graph
-from engine.states.risk_states import Decision, UserProfile
+from engine.states.risk_states import Decision, MedicineItem, MedicineList, UserProfile
+from persistence.repositories import get_thread, save_thread, update_thread_status
 from services.notification.email import send_warn_email
 
 router = APIRouter(prefix="/assess", tags=["assessment"])
@@ -57,44 +57,38 @@ def prepare_graph_input(request: RiskAssessmentRequest) -> dict:
     }
 
 
-def extract_medicines_from_state(state: dict) -> list[MedicineItem]:
+def extract_medicines_from_state(medicinelist: MedicineList) -> list[MedicineItem]:
     """Extract medicines from graph state regardless of shape."""
     medicines: list[MedicineItem] = []
-    if state and "medicinelist" in state and state["medicinelist"]:
-        medicinelist = state["medicinelist"]
-        if isinstance(medicinelist, dict) and "medicinelist" in medicinelist:
-            items = medicinelist["medicinelist"]
-        elif isinstance(medicinelist, list):
-            items = medicinelist
+    if not medicinelist or not medicinelist.medicinelist:
+        return []
+    items = medicinelist.medicinelist
+    for item in items:
+        if isinstance(item, dict):
+            medicines.append(MedicineItem(**item))
         else:
-            items = []
-
-        for item in items:
-            if isinstance(item, dict):
-                medicines.append(MedicineItem(**item))
-            else:
-                medicines.append(item)
-
+            medicines.append(item)
     return medicines
 
 
-async def send_warn_notification(state: dict) -> None:
+async def send_warn_notification(state: StateSnapshot) -> None:
     """Send WARN notification email when applicable."""
+    state_values = state.values
     try:
-        if state.get("decision") != Decision.WARN:
+        if state_values.get("decision") != Decision.WARN:
             return
 
-        user = state.get("user", {})
+        user = state_values.get("user", {})
         patient_name = user.get("name", "Unknown")
         patient_age = user.get("age", "Unknown")
         patient_gender = user.get("gender", "Unknown")
 
-        medicines = extract_medicines_from_state(state)
+        medicines = extract_medicines_from_state(state_values["medicinelist"])
         medicines_data = [
             med.dict() if hasattr(med, "dict") else med for med in medicines
         ]
 
-        safety_issues = state.get("safety_issues", [])
+        safety_issues = state_values.get("safety_issues", [])
         issues_data = [
             {
                 "issue_type": (
@@ -127,6 +121,29 @@ async def send_warn_notification(state: dict) -> None:
         logger.error("Error sending WARN notification: %s", exc)
 
 
+def extract_details_from_state(state: StateSnapshot) -> dict:
+    state_values = state.values
+    user_name = state_values["user"].get("name", "unknown")
+    medicines = extract_medicines_from_state(state_values["medicinelist"])
+    medicines_found = len(medicines)
+    image_hash = state_values["image_hash"]
+    is_valid = state_values["isValid"]
+    image_quality = state_values["image_quality"]
+    web_search_results = {}
+    missing_medicines = state_values.get("missing_medicines", [])
+
+    return {
+        "user_name": user_name,
+        "medicines": medicines,
+        "medicines_found": medicines_found,
+        "image_hash": image_hash,
+        "is_valid": is_valid,
+        "image_quality": image_quality,
+        "web_search_results": web_search_results,
+        "missing_medicines": missing_medicines,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -140,11 +157,13 @@ async def start_risk_assessment(request: RiskAssessmentRequest):
         graph_input = prepare_graph_input(request)
         thread_id = str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
+
         logger.info("Invoking LangGraph with thread_id: %s", thread_id)
         result = graph.invoke(graph_input, config)
         state = graph.get_state(config)
+
         if state.next and "human_approval" in state.next:
-            medicines = extract_medicines_from_state(state.values)
+            medicines = extract_medicines_from_state(state.values["medicinelist"])
             return HumanApprovalResponse(
                 status="awaiting_approval",
                 thread_id=thread_id,
@@ -156,27 +175,10 @@ async def start_risk_assessment(request: RiskAssessmentRequest):
                     "medicines_count": len(medicines),
                 },
             )
-        medicines = extract_medicines_from_state(result)
-        response = RiskAssessmentResponse(
-            status="completed",
-            user_name=request.user_profile.name,
-            medicines_found=len(medicines),
-            medicines=medicines,
-            image_hash=graph_input["image_hash"],
-            is_valid=result.get("isValid", False),
-            image_quality=result.get("image_quality", False),
-            image_quality_reason=result.get("image_quality_reason", ""),
-            web_search_results=result.get("web_search_results", {}),
-            missing_medicines=result.get("missing_medicines", []),
-            missing_fields=result.get("missing_fields", {}),
-            raw_state=result,
-        )
-        await send_warn_notification(result)
-        return response
     except ValueError as exc:
         logger.error("Validation error: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # pragma: no cover - runtime safeguard
+    except Exception as exc:
         logger.error("Error during risk assessment: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error processing risk assessment: {str(exc)}"
@@ -192,11 +194,19 @@ async def approve_medicines(approval: ApprovalRequest):
             approval.thread_id,
             approval.action,
         )
+
+        thread = approval.thread_id
+        if not thread:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Thread {approval.thread_id} not found in database",
+            )
+
         config = {"configurable": {"thread_id": approval.thread_id}}
         state = graph.get_state(config)
         if not state.values:
             raise HTTPException(
-                status_code=404, detail=f"Thread {approval.thread_id} not found"
+                status_code=404, detail=f"Thread {approval.thread_id} state not found"
             )
         if approval.action == "approve":
             resume_value: Any = "approve"
@@ -218,23 +228,24 @@ async def approve_medicines(approval: ApprovalRequest):
                 detail="Invalid action. Must be 'approve', 'regenerate', or 'edit'",
             )
         result = graph.invoke(Command(resume=resume_value), config=config)
-        medicines = extract_medicines_from_state(result)
-        user_name = result.get("user", {}).get("name", "Unknown")
+        print(state)
+        state_values = extract_details_from_state(state)
         response = RiskAssessmentResponse(
             status="completed",
-            user_name=user_name,
-            medicines_found=len(medicines),
-            medicines=medicines,
-            image_hash=result.get("image_hash", ""),
-            is_valid=result.get("isValid", False),
-            image_quality=result.get("image_quality", False),
-            image_quality_reason=result.get("image_quality_reason", ""),
-            web_search_results=result.get("web_search_results", {}),
-            missing_medicines=result.get("missing_medicines", []),
-            missing_fields=result.get("missing_fields", {}),
+            user_name=state_values["user_name"],
+            medicines_found=state_values["medicines_found"],
+            medicines=state_values["medicines"],
+            image_hash=state_values["image_hash"],
+            is_valid=state_values["is_valid"],
+            image_quality=state_values["image_quality"],
+            image_quality_reason=state.values.get("image_quality_reason", ""),
+            web_search_results=state.values.get("web_search_results", {}),
+            missing_medicines=state.values.get("missing_medicines", []),
+            missing_fields=state.values.get("missing_fields", {}),
             raw_state=result,
         )
-        await send_warn_notification(result)
+
+        await send_warn_notification(state)
         return response
     except HTTPException:
         raise
@@ -245,7 +256,7 @@ async def approve_medicines(approval: ApprovalRequest):
         )
 
 
-@router.post("/assess/file")
+@router.post("/file")
 async def assess_risk_file(
     image: UploadFile = File(...),
     name: str = Form(...),

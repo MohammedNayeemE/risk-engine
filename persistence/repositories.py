@@ -1,8 +1,9 @@
 import json
 import os
 import re
+from datetime import datetime
 from threading import Lock
-from typing import Any
+from typing import Any, Optional
 
 import psycopg
 from dotenv import load_dotenv
@@ -15,6 +16,175 @@ from engine.states.risk_states import MedicineItem, MedicineList
 from persistence.session import redis_client
 
 load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Thread Management Functions
+# ---------------------------------------------------------------------------
+
+
+def save_thread(
+    thread_id: str,
+    user_name: str,
+    status: str = "active",
+    metadata: Optional[dict] = None,
+) -> None:
+    """
+    Save thread metadata to the database.
+
+    Args:
+        thread_id: Unique thread identifier
+        user_name: Name of the user associated with the thread
+        status: Thread status (active, completed, failed, etc.)
+        metadata: Additional metadata as JSON
+    """
+    conninfo = (
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
+    )
+    metadata_json = json.dumps(metadata or {})
+
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO threads (thread_id, user_name, status, metadata)
+                VALUES (%s, %s, %s, %s::jsonb)
+                ON CONFLICT (thread_id) 
+                DO UPDATE SET 
+                    status = EXCLUDED.status,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (thread_id, user_name, status, metadata_json),
+            )
+            conn.commit()
+
+
+def get_thread(thread_id: str) -> Optional[dict]:
+    """
+    Retrieve thread metadata from the database.
+
+    Args:
+        thread_id: Thread identifier to look up
+
+    Returns:
+        Dictionary with thread data or None if not found
+    """
+    conninfo = (
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
+    )
+
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT thread_id, user_name, status, created_at, updated_at, metadata
+                FROM threads
+                WHERE thread_id = %s
+                """,
+                (thread_id,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "thread_id": row[0],
+                "user_name": row[1],
+                "status": row[2],
+                "created_at": row[3],
+                "updated_at": row[4],
+                "metadata": row[5],
+            }
+
+
+def update_thread_status(thread_id: str, status: str) -> None:
+    """
+    Update the status of an existing thread.
+
+    Args:
+        thread_id: Thread identifier
+        status: New status value
+    """
+    conninfo = (
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
+    )
+
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE threads
+                SET status = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE thread_id = %s
+                """,
+                (status, thread_id),
+            )
+            conn.commit()
+
+
+def get_user_threads(user_name: str, limit: int = 10) -> list[dict]:
+    """
+    Get all threads for a specific user.
+
+    Args:
+        user_name: User to get threads for
+        limit: Maximum number of threads to return
+
+    Returns:
+        List of thread dictionaries
+    """
+    conninfo = (
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
+    )
+
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT thread_id, user_name, status, created_at, updated_at, metadata
+                FROM threads
+                WHERE user_name = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (user_name, limit),
+            )
+            rows = cur.fetchall()
+
+            return [
+                {
+                    "thread_id": row[0],
+                    "user_name": row[1],
+                    "status": row[2],
+                    "created_at": row[3],
+                    "updated_at": row[4],
+                    "metadata": row[5],
+                }
+                for row in rows
+            ]
+
+
+# ---------------------------------------------------------------------------
+# Existing Functions
+# ---------------------------------------------------------------------------
 
 
 def get_image_hash(

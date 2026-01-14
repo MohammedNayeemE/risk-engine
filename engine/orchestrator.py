@@ -1,8 +1,11 @@
 import base64
 import hashlib
+import os
 
+import psycopg
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -44,8 +47,8 @@ builder.add_edge(START, "validate_input")
 # )
 builder.add_edge("sql_graph", "ban_check")
 
-# Initialize checkpointer for human-in-the-loop support
-checkpointer = MemorySaver()
+
+checkpointer = InMemorySaver()
 
 graph = builder.compile(checkpointer=checkpointer, interrupt_before=["human_approval"])
 

@@ -38,13 +38,13 @@ class Settings(BaseSettings):
 
     # Email
     EMAIL_ENABLED: bool = True
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SENDER_EMAIL: str = "noreply@riskengine.com"
-    SENDER_NAME: str = "Risk Engine"
     WARN_RECIPIENTS: str = ""
+
+    MAIL_USERNAME: str = ""
+    MAIL_PASSWORD: str = ""
+    MAIL_FROM: str = ""
+    MAIL_PORT: int = 587
+    MAIL_SERVER: str = "smtp.gmail.com"
 
     model_config = SettingsConfigDict(
         env_file=".env",

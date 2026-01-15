@@ -75,7 +75,7 @@ async def send_warn_notification(state: StateSnapshot) -> None:
     """Send WARN notification email when applicable."""
     state_values = state.values
     try:
-        if state_values.get("decision") != Decision.WARN:
+        if state_values.get("decision") != Decision.WARN.value:
             return
 
         user = state_values.get("user", {})
@@ -117,7 +117,7 @@ async def send_warn_notification(state: StateSnapshot) -> None:
             medicines=medicines_data,
             issues=issues_data,
         )
-    except Exception as exc:  # pragma: no cover - side-effect guard
+    except Exception as exc:
         logger.error("Error sending WARN notification: %s", exc)
 
 

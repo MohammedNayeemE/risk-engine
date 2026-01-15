@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 # Configure email connection
 email_config = (
     ConnectionConfig(
-        MAIL_USERNAME=settings.SENDER_NAME,
-        MAIL_PASSWORD=settings.SMTP_PASSWORD,
-        MAIL_FROM=settings.SENDER_EMAIL,
-        MAIL_PORT=settings.SMTP_PORT,
-        MAIL_SERVER=settings.SMTP_HOST,
+        MAIL_USERNAME=settings.MAIL_USERNAME,
+        MAIL_PASSWORD=settings.MAIL_PASSWORD,
+        MAIL_FROM=settings.MAIL_FROM,
+        MAIL_PORT=settings.MAIL_PORT,
+        MAIL_SERVER=settings.MAIL_SERVER,
         MAIL_STARTTLS=True,
         MAIL_SSL_TLS=False,
         USE_CREDENTIALS=True,
     )
-    if settings.EMAIL_ENABLED and settings.SMTP_USER
+    if settings.EMAIL_ENABLED and settings.MAIL_USERNAME
     else None
 )
 
@@ -52,20 +52,19 @@ async def send_warn_email(
         bool: True if email sent successfully, False otherwise
     """
 
-    # Check if email is enabled
     if not settings.EMAIL_ENABLED or not email_config:
         logger.warning("Email service is not enabled or not configured")
         return False
 
-    # Use provided recipients or fall back to configured recipients
     recipients = recipient_emails or settings.WARN_RECIPIENTS
+    if isinstance(recipients, str):
+        recipients = recipients.split(",")
 
     if not recipients:
         logger.warning("No recipient emails configured for WARN decision notifications")
         return False
 
     try:
-        # Build email HTML content
         html_content = _build_warn_email_html(
             patient_name=patient_name,
             patient_age=patient_age,
@@ -74,15 +73,13 @@ async def send_warn_email(
             issues=issues,
         )
 
-        # Create message
         message = MessageSchema(
-            subject=f"⚠️ Medicine Safety Warning - {patient_name}",
+            subject=f" Medicine Safety Warning - {patient_name}",
             recipients=recipients,
-            html=html_content,
+            body=html_content,
             subtype="html",
         )
 
-        # Send email
         fm = FastMail(email_config)
         await fm.send_message(message)
 

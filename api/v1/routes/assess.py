@@ -75,7 +75,11 @@ async def send_warn_notification(state: StateSnapshot) -> None:
     """Send WARN notification email when applicable."""
     state_values = state.values
     try:
-        if state_values.get("decision") != Decision.WARN.value:
+        print(state_values.get("admin_report").overall_decision.value)
+        if (
+            state_values.get("admin_report").overall_decision.value
+            != Decision.WARN.value
+        ):
             return
 
         user = state_values.get("user", {})
@@ -228,7 +232,8 @@ async def approve_medicines(approval: ApprovalRequest):
                 detail="Invalid action. Must be 'approve', 'regenerate', or 'edit'",
             )
         result = graph.invoke(Command(resume=resume_value), config=config)
-        print(state)
+        state = graph.get_state(config)
+        # print(state)
         state_values = extract_details_from_state(state)
         response = RiskAssessmentResponse(
             status="completed",

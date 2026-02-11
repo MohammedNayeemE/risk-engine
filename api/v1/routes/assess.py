@@ -4,19 +4,28 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from langgraph.types import Command, StateSnapshot
 
 from api.v1.schemas import (
     ApprovalRequest,
     HumanApprovalResponse,
+    ReportResponse,
     RiskAssessmentRequest,
     RiskAssessmentResponse,
     UserProfileRequest,
 )
+from app.middleware.auth import get_current_client
 from engine.orchestrator import graph
 from engine.states.risk_states import Decision, MedicineItem, MedicineList, UserProfile
-from persistence.repositories import get_thread, save_thread, update_thread_status
+from persistence.models import Client
+from persistence.repositories import (
+    get_client_reports,
+    get_thread,
+    save_report,
+    save_thread,
+    update_thread_status,
+)
 from services.notification.email import send_warn_email
 
 router = APIRouter(prefix="/assess", tags=["assessment"])
@@ -32,9 +41,66 @@ def compute_image_hash(image_base64: str) -> str:
     """Compute SHA256 hash for the prescription image."""
     try:
         return hashlib.sha256(base64.b64decode(image_base64)).hexdigest()
-    except Exception as exc:  # pragma: no cover - defensive guard
+    except Exception as exc:
         logger.error("Error computing image hash: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid base64 image") from exc
+
+
+ALLOWED_IMAGE_MIME: set[str] = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+}
+
+
+def detect_image_mime(data: bytes) -> Optional[str]:
+    """Detect basic image MIME type from magic bytes.
+
+    Returns a MIME string if recognized, otherwise None.
+    """
+    if not data or len(data) < 4:
+        return None
+
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+
+    if data[:8] == b"\x89PNG\r\n\x1a\x0a":
+        return "image/png"
+
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+
+    if data[:2] == b"BM":
+        return "image/bmp"
+
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return "image/tiff"
+
+    return None
+
+
+def validate_and_get_image_mime(data: bytes) -> str:
+    """Validate that the uploaded file is an image and return its MIME.
+
+    Uses content-based detection (magic bytes). If detection fails, rejects.
+    """
+    detected = detect_image_mime(data)
+    if not detected:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file must be a valid image (jpeg/png/gif/webp/bmp/tiff)",
+        )
+
+    if detected not in ALLOWED_IMAGE_MIME:
+        raise HTTPException(status_code=400, detail="Unsupported image format")
+
+    return detected
 
 
 def prepare_graph_input(request: RiskAssessmentRequest) -> dict:
@@ -75,7 +141,6 @@ async def send_warn_notification(state: StateSnapshot) -> None:
     """Send WARN notification email when applicable."""
     state_values = state.values
     try:
-        print(state_values.get("admin_report").overall_decision.value)
         if (
             state_values.get("admin_report").overall_decision.value
             != Decision.WARN.value
@@ -179,6 +244,11 @@ async def start_risk_assessment(request: RiskAssessmentRequest):
                     "medicines_count": len(medicines),
                 },
             )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="The given image is not a valid prescription , please provide a valid prescription",
+            )
     except ValueError as exc:
         logger.error("Validation error: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -190,7 +260,9 @@ async def start_risk_assessment(request: RiskAssessmentRequest):
 
 
 @router.post("/approve", response_model=RiskAssessmentResponse)
-async def approve_medicines(approval: ApprovalRequest):
+async def approve_medicines(
+    approval: ApprovalRequest, client: Client = Depends(get_current_client)
+):
     """Resume a paused assessment after human approval or edits."""
     try:
         logger.info(
@@ -233,7 +305,6 @@ async def approve_medicines(approval: ApprovalRequest):
             )
         result = graph.invoke(Command(resume=resume_value), config=config)
         state = graph.get_state(config)
-        # print(state)
         state_values = extract_details_from_state(state)
         response = RiskAssessmentResponse(
             status="completed",
@@ -249,6 +320,10 @@ async def approve_medicines(approval: ApprovalRequest):
             missing_fields=state.values.get("missing_fields", {}),
             raw_state=result,
         )
+        try:
+            save_report(client_id=client.id or 1, response=response.model_dump())
+        except Exception as save_exc:
+            logger.error("Failed to save report: %s", save_exc, exc_info=True)
 
         await send_warn_notification(state)
         return response
@@ -284,6 +359,7 @@ async def assess_risk_file(
     try:
         logger.info(f"Processing file upload for user: {name}")
         image_bytes = await image.read()
+        image_mime = validate_and_get_image_mime(image_bytes)
         image_base64 = base64.b64encode(image_bytes).decode()
         allergies_list = [a.strip() for a in allergies.split(",")] if allergies else []
         conditions_list = (
@@ -298,9 +374,60 @@ async def assess_risk_file(
                 known_conditions=conditions_list,
             ),
             image_base64=image_base64,
-            image_mime=image.content_type or "image/jpeg",
+            image_mime=image_mime,
         )
         return await start_risk_assessment(request)
     except Exception as e:
         logger.error(f"Error processing file upload: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+
+@router.get("/get-reports", response_model=list[ReportResponse])
+async def get_reports(client: Client = Depends(get_current_client)):
+    """
+    Retrieve all saved assessment reports for the authenticated client.
+
+    Returns only the explanation summary from each stored assessment.
+    Results are ordered by creation date (most recent first).
+    """
+    try:
+        logger.info("Fetching reports for client: %s", client.id)
+        reports = get_client_reports(client.id or 1)
+
+        result = []
+        for report in reports:
+            try:
+                response_data = report.response
+                explanation_content = ""
+
+                if isinstance(response_data, dict):
+                    raw_state = response_data.get("raw_state", {})
+                    if isinstance(raw_state, dict):
+                        explanation_obj = raw_state.get("explanation", {})
+                        if isinstance(explanation_obj, dict):
+                            explanation_content = explanation_obj.get("content", "")
+                        elif isinstance(explanation_obj, str):
+                            explanation_content = explanation_obj
+
+                result.append(
+                    ReportResponse(
+                        id=report.id or 0,
+                        created_at=str(report.created_at) if report.created_at else "",
+                        explanation=explanation_content,
+                    )
+                )
+            except Exception as extract_exc:
+                logger.warning(
+                    "Error extracting explanation from report %s: %s",
+                    report.id,
+                    extract_exc,
+                )
+                continue
+
+        return result
+    except Exception as exc:
+        logger.error("Error fetching reports: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching reports: {str(exc)}"
+        )
+

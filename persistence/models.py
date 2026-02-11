@@ -23,8 +23,8 @@ class APIKey(BaseModel):
     id: Optional[int] = None
     client_id: int
     key_hash: str
-    key_prefix: str  # Store first 8 chars for identification
-    name: Optional[str] = None  # Optional name for the key
+    key_prefix: str  
+    name: Optional[str] = None  
     is_active: bool = True
     last_used_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
@@ -34,4 +34,13 @@ class APIKey(BaseModel):
 class APIKeyWithSecret(APIKey):
     """API Key model with plain text secret (only returned on creation)."""
     
-    api_key: str  # Full plain text key
+    api_key: str  
+
+
+class Report(BaseModel):
+    """Stored assessment report linked to a client."""
+
+    id: Optional[int] = None
+    client_id: int
+    response: dict
+    created_at: Optional[datetime] = None

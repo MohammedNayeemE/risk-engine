@@ -59,7 +59,7 @@ def validate_input(state: OverallState) -> Command[Literal[END, "check_image_qua
     return Command(goto="check_image_quality", update={"isValid": True})
 
 
-def extract_image(state: OverallState) -> Command[Literal["human_approval"]]:
+def extract_image(state: OverallState) -> Command[Literal["human_approval" , END]]:
     image_url = f"data:{state['image_mime']};base64,{state['image_base64']}"
 
     res = get_image_hash(state["image_hash"], model=MedicineList)
@@ -78,8 +78,14 @@ def extract_image(state: OverallState) -> Command[Literal["human_approval"]]:
 
     gemini_model = ModelManager.get_model_for_image_processing()
     response = gemini_model.with_structured_output(MedicineList).invoke([message])
+    if(response and not response.medicinelist):
+        set_image_hash(state["image_hash"], response)
+        return Command(
+            goto=END , update= {
+                "medicinelist" : response
+            }
+        )
     set_image_hash(state["image_hash"], response)
-
     return Command(goto="human_approval", update={"medicinelist": response})
 
 

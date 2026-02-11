@@ -2,7 +2,8 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "agent": "./engine/orchestrator.py:graph"
+    "engine": "./engine/orchestrator.py:graph",
+    "injestor": "./engine/graphs/etl_graph.py:etl"
   },
   "env": ".env",
   "image_distro": "wolfi"

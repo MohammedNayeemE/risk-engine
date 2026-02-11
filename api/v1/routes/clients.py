@@ -1,4 +1,5 @@
 """API routes for client registration and API key management."""
+
 from datetime import datetime
 from typing import Annotated
 
@@ -38,9 +39,7 @@ async def register_client(request: ClientRegistrationRequest):
     - Frontend domain for CORS validation
 
     Returns the client information along with an API key.
-    **Important**: Save the API key securely as it won't be shown again.
     """
-    # Check if client already exists
     existing_client = get_client_by_email(request.email)
     if existing_client:
         raise HTTPException(
@@ -49,7 +48,6 @@ async def register_client(request: ClientRegistrationRequest):
         )
 
     try:
-        # Create client and generate API key
         client, api_key_obj = create_client(
             company_name=request.company_name,
             email=request.email,
@@ -83,8 +81,6 @@ async def create_new_api_key(
     - Creating keys with specific names
     - Rotating keys
     - Creating environment-specific keys (dev, staging, prod)
-
-    **Important**: Save the API key securely as it won't be shown again.
     """
     try:
         api_key_obj = create_api_key_for_client(
@@ -101,7 +97,9 @@ async def create_new_api_key(
             api_key=api_key_obj.api_key,
             key_prefix=api_key_obj.key_prefix,
             name=api_key_obj.name or "API Key",
-            created_at=api_key_obj.created_at.isoformat() if api_key_obj.created_at else "",
+            created_at=(
+                api_key_obj.created_at.isoformat() if api_key_obj.created_at else ""
+            ),
         )
     except Exception as e:
         raise HTTPException(
@@ -136,7 +134,9 @@ async def list_api_keys(
                     key_prefix=key.key_prefix,
                     name=key.name,
                     is_active=key.is_active,
-                    last_used_at=key.last_used_at.isoformat() if key.last_used_at else None,
+                    last_used_at=(
+                        key.last_used_at.isoformat() if key.last_used_at else None
+                    ),
                     created_at=key.created_at.isoformat() if key.created_at else "",
                     expires_at=key.expires_at.isoformat() if key.expires_at else None,
                 )
@@ -165,11 +165,8 @@ async def revoke_key(
     or you'll lose access to your account.
     """
     try:
-        # Verify the key belongs to the current client
         api_keys = list_client_api_keys(current_client.id)
-        key_to_revoke = next(
-            (k for k in api_keys if k.id == request.api_key_id), None
-        )
+        key_to_revoke = next((k for k in api_keys if k.id == request.api_key_id), None)
 
         if not key_to_revoke:
             raise HTTPException(
@@ -183,8 +180,9 @@ async def revoke_key(
                 detail="API key is already revoked",
             )
 
-        # Check if this is the last active key
-        active_keys = [k for k in api_keys if k.is_active and k.id != request.api_key_id]
+        active_keys = [
+            k for k in api_keys if k.is_active and k.id != request.api_key_id
+        ]
         if len(active_keys) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

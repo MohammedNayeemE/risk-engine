@@ -143,3 +143,10 @@ class RevokeAPIKeyResponse(BaseModel):
 
     success: bool
     message: str
+
+class ReportResponse(BaseModel):
+    """Simplified report response with only the explanation."""
+
+    id: int
+    created_at: str
+    explanation: str

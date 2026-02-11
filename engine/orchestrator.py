@@ -50,7 +50,7 @@ builder.add_edge("sql_graph", "ban_check")
 
 checkpointer = InMemorySaver()
 
-graph = builder.compile(checkpointer=checkpointer, interrupt_before=["human_approval"])
+graph = builder.compile(interrupt_before=["human_approval"])
 
 # TODO: write mock tests
 

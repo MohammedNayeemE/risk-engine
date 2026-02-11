@@ -34,11 +34,6 @@ async def root() -> dict:
 app.include_router(api_router)
 
 
-# ============================================================================
-# Info Endpoint
-# ============================================================================
-
-
 @app.get("/info")
 async def get_info():
     """Get API information"""

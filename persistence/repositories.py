@@ -13,7 +13,7 @@ from tavily import TavilyClient
 
 from engine.etl.ingest import get_pgvector_store
 from engine.states.risk_states import MedicineItem, MedicineList
-from persistence.models import APIKey, APIKeyWithSecret, Client
+from persistence.models import APIKey, APIKeyWithSecret, Client, Report
 from persistence.session import redis_client
 from utils.api_key import generate_api_key_with_hash
 
@@ -821,3 +821,114 @@ def list_client_api_keys(client_id: int) -> list[APIKey]:
                 )
                 for row in rows
             ]
+
+
+# ---------------------------------------------------------------------------
+# Reports Persistence
+# ---------------------------------------------------------------------------
+
+
+def _ensure_reports_table(cur) -> None:
+    """Create the reports table if it doesn't exist."""
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reports (
+            id SERIAL PRIMARY KEY,
+            client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            response JSONB NOT NULL,
+            created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+def save_report(client_id: int, response: dict) -> Optional[Report]:
+    """
+    Save a completed RiskAssessmentResponse for a client.
+
+    Args:
+        client_id: ID of the authenticated client
+        response: RiskAssessmentResponse serialized to dict
+
+    Returns:
+        Report object for the inserted row or None on failure
+    """
+    conninfo = (
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
+    )
+
+    try:
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                _ensure_reports_table(cur)
+                response_json = json.dumps(response or {})
+                cur.execute(
+                    """
+                    INSERT INTO reports (client_id, response)
+                    VALUES (%s, %s::jsonb)
+                    RETURNING id, client_id, response, created_at
+                    """,
+                    (client_id, response_json),
+                )
+                row = cur.fetchone()
+                conn.commit()
+                if not row:
+                    return None
+                return Report(
+                    id=row[0],
+                    client_id=row[1],
+                    response=row[2],
+                    created_at=row[3],
+                )
+    except Exception:
+        return None
+
+def get_client_reports(client_id: int, limit: int = 10) -> list[Report]:
+    """
+    Retrieve all reports for a specific client.
+
+    Args:
+        client_id: The authenticated client's ID
+        limit: Maximum number of reports to return (default 10)
+
+    Returns:
+        List of Report objects
+    """
+    conninfo = (
+        f"host={os.getenv('PGHOST')} "
+        f"port={os.getenv('PGPORT', 5432)} "
+        f"user={os.getenv('PGUSER')} "
+        f"password={os.getenv('PGPASSWORD')} "
+        f"dbname={os.getenv('PGDATABASE')}"
+    )
+
+    try:
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                _ensure_reports_table(cur)
+                cur.execute(
+                    """
+                    SELECT id, client_id, response, created_at
+                    FROM reports
+                    WHERE client_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (client_id, limit),
+                )
+                rows = cur.fetchall()
+                return [
+                    Report(
+                        id=row[0],
+                        client_id=row[1],
+                        response=row[2],
+                        created_at=row[3],
+                    )
+                    for row in rows
+                ]
+    except Exception:
+        return []

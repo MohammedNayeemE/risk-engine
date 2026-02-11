@@ -41,7 +41,7 @@ Return a JSON object in the following exact format:
 
 - Output MUST be valid JSON.
 - Do NOT include explanations, comments, markdown, or extra text.
-- If no medicines are found or the prescription is invalid, return:
+- If the given image is not a prescription or the prescription is invalid or no medicines are found, return:
   { "medicinelist": [] }
 """
 

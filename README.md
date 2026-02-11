@@ -2,14 +2,15 @@
 
 Modern medicine safety risk assessment engine built with LangChain + LangGraph.
 
+## Project Overview
+Risk Engine is designed to provide robust safety risk assessments for modern medicine. Using the power of LangChain and LangGraph, this system leverages advanced AI algorithms to analyze and respond to safety and risk evaluation tasks efficiently.
 
-## Architecture
+## Technical Overview / Architecture
+This system adopts a modular architecture, ensuring scalability and maintainability. The components of the architecture are integrated seamlessly to ensure functionality and performance. For further details, you can explore the [DeepWiki documentation](https://deepwiki.com/MohammedNayeemE/risk-engine):
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for design principles and layered structure.
-Or visit this deepwiki documentation 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/MohammedNayeemE/risk-engine)
 
-## Getting Started
+## Setup & Run Instructions
 
 ```bash
 # Install dependencies
@@ -23,18 +24,17 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
-## API
-
-- **POST /assess/start** – Start a risk assessment (returns thread ID if approval needed)
-- **POST /assess/approve** – Resume a paused assessment with user input
-- **GET /health** – Health check
-
 ## Testing
 
 ```bash
 pytest tests/
 ```
 
-## Contributing
+## Key Design Decisions
+- **Framework Selection**: LangChain and LangGraph were chosen for their robust features, scalability, and community support.
+- **Scalability**: Modular design to ensure components are loosely coupled and extensible.
+- **Ease of Use**: Comprehensive setup instructions and environment configuration to support developers and contributors.
+- **Testing Strategy**: Pytest used for reliable and efficient test management.
 
+## Contributing
 TBD

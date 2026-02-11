@@ -25,42 +25,23 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         origin = request.headers.get("origin")
 
-        response = await call_next(request)
-
         allowed = False
         allowed_origin = None
 
-        if hasattr(request.state, "client") and request.state.client:
-            client_domain = request.state.client.domain
-            if origin and self._origin_matches_domain(origin, client_domain):
+        if request.method == "OPTIONS":
+            if (
+                origin in self.default_allowed_origins
+                or origin
+                and any(
+                    origin.startswith(default_origin)
+                    for default_origin in self.default_allowed_origins
+                )
+            ):
                 allowed = True
                 allowed_origin = origin
-        # Otherwise, check default allowed origins
-        elif (
-            origin in self.default_allowed_origins
-            or origin
-            and any(
-                origin.startswith(default_origin)
-                for default_origin in self.default_allowed_origins
-            )
-        ):
-            allowed = True
-            allowed_origin = origin
 
-        # Set CORS headers if allowed
-        if allowed and allowed_origin:
-            response.headers["Access-Control-Allow-Origin"] = allowed_origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = (
-                "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-            )
-            response.headers["Access-Control-Allow-Headers"] = (
-                "Content-Type, Authorization, X-API-Key"
-            )
-
-        # Handle preflight requests
-        if request.method == "OPTIONS":
             response = Response(status_code=200)
+
             if allowed and allowed_origin:
                 response.headers["Access-Control-Allow-Origin"] = allowed_origin
                 response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -70,6 +51,29 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
                 response.headers["Access-Control-Allow-Headers"] = (
                     "Content-Type, Authorization, X-API-Key"
                 )
+
+            return response  
+
+        response = await call_next(request)
+
+        if hasattr(request.state, "client") and request.state.client:
+            client_domain = request.state.client.domain
+            if origin and self._origin_matches_domain(origin, client_domain):
+                allowed = True
+                allowed_origin = origin
+        elif origin in self.default_allowed_origins:
+            allowed = True
+            allowed_origin = origin
+
+        if allowed and allowed_origin:
+            response.headers["Access-Control-Allow-Origin"] = allowed_origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            )
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, Authorization, X-API-Key"
+            )
 
         return response
 
@@ -82,18 +86,14 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
         - http://localhost:3000 matches http://localhost:3000
         - Wildcards in domain (*.example.com)
         """
-        # Exact match
         if origin == domain:
             return True
 
-        # Handle wildcard subdomains (e.g., *.example.com)
         if domain.startswith("*."):
             base_domain = domain[2:]  # Remove "*."
             if origin.endswith(base_domain):
                 return True
 
-        # Handle different ports on same domain
-        # e.g., domain="http://localhost:3000" should match "http://localhost:3000"
         if origin.startswith(domain.rstrip("/")):
             return True
 
